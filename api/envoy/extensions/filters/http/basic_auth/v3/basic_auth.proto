@@ -7,6 +7,8 @@ import "envoy/config/core/v3/base.proto";
 import "udpa/annotations/sensitive.proto";
 import "udpa/annotations/status.proto";
 
+import "validate/validate.proto";
+
 option java_package = "io.envoyproxy.envoy.extensions.filters.http.basic_auth.v3";
 option java_outer_classname = "BasicAuthProto";
 option java_multiple_files = true;
@@ -33,4 +35,17 @@ message BasicAuth {
   // The value needs to be the htpasswd format.
   // Reference to https://httpd.apache.org/docs/2.4/programs/htpasswd.html
   config.core.v3.DataSource users = 1 [(udpa.annotations.sensitive) = true];
+}
+
+message BasicAuthPerRoute {
+  oneof override {
+    option (validate.required) = true;
+
+    // Disable the basic auth filter for this particular vhost or route.
+    // If disabled is specified in multiple per-filter-configs, the most specific one will be used.
+    bool disabled = 1 [(validate.rules).bool.const = true];
+
+    // Username-password pairs for this route.
+    config.core.v3.DataSource users = 2 [(validate.rules).message.required = true, (udpa.annotations.sensitive) = true];
+  }
 }
