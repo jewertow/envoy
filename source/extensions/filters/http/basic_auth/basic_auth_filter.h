@@ -7,6 +7,8 @@
 #include "source/extensions/filters/http/common/pass_through_filter.h"
 
 #include "absl/container/flat_hash_map.h"
+#include <algorithm>
+#include <memory>
 
 namespace Envoy {
 namespace Extensions {
@@ -46,17 +48,33 @@ class FilterConfig {
 public:
   FilterConfig(UserMap&& users, const std::string& stats_prefix, Stats::Scope& scope);
   const BasicAuthStats& stats() const { return stats_; }
-  bool validateUser(absl::string_view username, absl::string_view password) const;
+  const UserMap& users() const { return users_; }
 
 private:
   static BasicAuthStats generateStats(const std::string& prefix, Stats::Scope& scope) {
     return BasicAuthStats{ALL_BASIC_AUTH_STATS(POOL_COUNTER_PREFIX(scope, prefix))};
   }
 
-  const UserMap users_;
+  UserMap users_;
   BasicAuthStats stats_;
 };
 using FilterConfigConstSharedPtr = std::shared_ptr<const FilterConfig>;
+using FilterConfigSharedPtr = std::shared_ptr<FilterConfig>;
+
+/**
+ * Per route settings for BasicAuth. Allows customizing users on a virtualhost\route\weighted cluster level.
+ */
+class FilterConfigPerRoute : public Router::RouteSpecificFilterConfig {
+public:
+  FilterConfigPerRoute(UserMap&& users, bool disabled):
+      users_(std::move(users)), disabled_(disabled) {}
+  bool disabled() const { return disabled_; }
+  const UserMap& users() const { return users_; }
+
+private:
+  UserMap users_;
+  bool disabled_;
+};
 
 // The Envoy filter to process HTTP basic auth.
 class BasicAuthFilter : public Http::PassThroughDecoderFilter,
@@ -66,6 +84,7 @@ public:
 
   // Http::StreamDecoderFilter
   Http::FilterHeadersStatus decodeHeaders(Http::RequestHeaderMap& headers, bool) override;
+  bool validateUser(const UserMap& users, absl::string_view username, absl::string_view password) const;
 
 private:
   Http::FilterHeadersStatus onDenied(absl::string_view body,
@@ -73,24 +92,6 @@ private:
 
   // The callback function.
   FilterConfigConstSharedPtr config_;
-};
-
-using FilterConfigSharedPtr = std::shared_ptr<FilterConfig>;
-
-/**
- * Per route settings for BasicAuth. Allows customizing users on a virtualhost\route\weighted cluster level.
- */
-class FilterConfigPerRoute : public Router::RouteSpecificFilterConfig {
-public:
-  FilterConfigPerRoute(
-      const envoy::extensions::filters::http::basic_auth::v3::BasicAuthPerRoute& config)
-      : disabled_(config.disabled()) {
-  }
-
-  bool disabled() const { return disabled_; }
-
-private:
-  bool disabled_;
 };
 
 } // namespace BasicAuth
