@@ -337,6 +337,11 @@ message CertificateValidationContext {
     // For HTTP connections, the result of certificate verification can be used in route matching. (
     // see :ref:`validated <envoy_v3_api_field_config.route.v3.RouteMatch.TlsContextMatchOptions.validated>` ).
     ACCEPT_UNTRUSTED = 1;
+
+    // Connections where the certificate fails verification or is not provided will be permitted.
+    // For HTTP connections, the result of certificate verification can be used in route matching. (
+    // see :ref:`validated <envoy_v3_api_field_config.route.v3.RouteMatch.TlsContextMatchOptions.validated>` ).
+    ACCEPT_UNTRUSTED_AND_DO_NOT_REQUEST_PEER_CERT = 2;
   }
 
   message SystemRootCerts {

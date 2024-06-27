@@ -58,6 +58,7 @@ absl::StatusOr<int> DefaultCertValidator::initializeSslContexts(std::vector<SSL_
 
   int verify_mode = SSL_VERIFY_NONE;
   int verify_mode_validation_context = SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
+  bool do_not_request_peer_cert = false;
 
   if (config_ != nullptr) {
     envoy::extensions::transport_sockets::tls::v3::CertificateValidationContext::
@@ -67,6 +68,11 @@ absl::StatusOr<int> DefaultCertValidator::initializeSslContexts(std::vector<SSL_
       verify_mode = SSL_VERIFY_PEER; // Ensure client-certs will be requested even if we have
                                      // nothing to verify against
       verify_mode_validation_context = SSL_VERIFY_PEER;
+    } else if (verification == envoy::extensions::transport_sockets::tls::v3::
+                            CertificateValidationContext::ACCEPT_UNTRUSTED_AND_DO_NOT_REQUEST_PEER_CERT) {
+      verify_mode = SSL_VERIFY_NONE;
+      verify_mode_validation_context = SSL_VERIFY_PEER;
+      do_not_request_peer_cert = true;
     }
   }
 
@@ -109,7 +115,9 @@ absl::StatusOr<int> DefaultCertValidator::initializeSslContexts(std::vector<SSL_
                                         ? X509_V_FLAG_CRL_CHECK
                                         : X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL);
       }
-      verify_mode = SSL_VERIFY_PEER;
+      if (!do_not_request_peer_cert) {
+        verify_mode = SSL_VERIFY_PEER;
+      }
       verify_trusted_ca_ = true;
 
       if (config_->allowExpiredCertificate()) {
