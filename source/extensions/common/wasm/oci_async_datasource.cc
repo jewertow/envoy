@@ -9,25 +9,24 @@
 
 namespace Envoy {
 
-// Default Parameters of the jittered backoff strategy.
-// static constexpr uint32_t RetryInitialDelayMilliseconds = 1000;
-// static constexpr uint32_t RetryMaxDelayMilliseconds = 10 * 1000;
-// static constexpr uint32_t RetryCount = 1;
-
-OciAsyncDataProvider::OciAsyncDataProvider(
+OciManifestProvider::OciManifestProvider(
     Upstream::ClusterManager& cm, Init::Manager& manager,
     const envoy::config::core::v3::HttpUri uri, std::string token, std::string sha256,
-    bool allow_empty, OciAsyncDataSourceCb&& callback)
+    bool allow_empty, OciManifestCb&& callback)
     : allow_empty_(allow_empty), callback_(std::move(callback)),
       fetcher_(std::make_unique<Config::DataFetcher::OciFetcher>(cm, uri, token, sha256, *this)),
-      init_target_("OciAsyncDataProvider", [this]() { start(); }) {
+      init_target_("OciManifestProvider", [this]() { start(); }) {
 
-  // auto strategy_or_error = Config::Utility::prepareJitteredExponentialBackOffStrategy(
-  //     source, random, RetryInitialDelayMilliseconds, RetryMaxDelayMilliseconds);
-  // THROW_IF_NOT_OK_REF(strategy_or_error.status());
-  // backoff_strategy_ = std::move(strategy_or_error.value());
+  manager.add(init_target_);
+}
 
-  // retry_timer_ = dispatcher.createTimer([this]() -> void { start(); });
+OciBlobProvider::OciBlobProvider(
+    Upstream::ClusterManager& cm, Init::Manager& manager,
+    const envoy::config::core::v3::HttpUri uri, std::string token, std::string digest, std::string sha256,
+    bool allow_empty, OciBlobCb&& callback)
+    : allow_empty_(allow_empty), callback_(std::move(callback)),
+      fetcher_(std::make_unique<Config::DataFetcher::OciBlobFetcher>(cm, uri, token, digest, sha256, *this)),
+      init_target_("OciBlobProvider", [this]() { start(); }) {
 
   manager.add(init_target_);
 }

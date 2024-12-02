@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <memory>
 
 #include "envoy/event/deferred_deletable.h"
 #include "envoy/extensions/wasm/v3/wasm.pb.h"
@@ -323,7 +324,9 @@ bool createWasm(const PluginSharedPtr& plugin, const Stats::ScopeSharedPtr& scop
                 Event::Dispatcher& dispatcher, Api::Api& api,
                 Server::ServerLifecycleNotifier& lifecycle_notifier,
                 RemoteAsyncDataProviderPtr& remote_data_provider,
-                OciAsyncDataProviderPtr& oci_data_provider, CreateWasmCallback&& cb,
+                OciManifestProviderPtr& oci_manifest_provider,
+                OciBlobProviderPtr& oci_blob_provider,
+                CreateWasmCallback&& cb,
                 CreateContextFn create_root_context_for_testing) {
   auto& stats_handler = getCreateStatsHandler();
   std::string source, code;
@@ -490,6 +493,7 @@ bool createWasm(const PluginSharedPtr& plugin, const Stats::ScopeSharedPtr& scop
     } else {
       if (vm_config.code().remote().has_oci_image()) {
         auto img_name = vm_config.code().remote().oci_image().image_name();
+        auto token = vm_config.code().remote().oci_image().token();
         ENVOY_LOG_TO_LOGGER(Envoy::Logger::Registry::getLog(Envoy::Logger::Id::wasm), info,
                             fmt::format("Fetching Wasm image {}", img_name));
 
@@ -498,8 +502,20 @@ bool createWasm(const PluginSharedPtr& plugin, const Stats::ScopeSharedPtr& scop
         uri.set_uri("https://registry-1.docker.io/v2/jewe/envoy-filter-http-wasm-example/manifests/0.0.1");
         uri.mutable_timeout()->set_seconds(10);
 
-        oci_data_provider = std::make_unique<OciAsyncDataProvider>(
-            cluster_manager, init_manager, uri, vm_config.code().remote().oci_image().token(), vm_config.code().remote().sha256(), true, fetch_callback);
+        auto get_blob_cb = [&oci_blob_provider, &cluster_manager, &init_manager, token, fetch_callback](const std::string digest) {
+          std::string blob_uri = "https://registry-1.docker.io/v2/jewe/envoy-filter-http-wasm-example/blobs/";
+          absl::StrAppend(&blob_uri, digest);
+
+          envoy::config::core::v3::HttpUri uri;
+          uri.set_cluster("docker");
+          uri.set_uri(blob_uri);
+          uri.mutable_timeout()->set_seconds(10);
+
+          oci_blob_provider = std::make_unique<OciBlobProvider>(cluster_manager, init_manager, uri, token, digest, "", false, fetch_callback);
+        };
+
+        oci_manifest_provider = std::make_unique<OciManifestProvider>(
+            cluster_manager, init_manager, uri, token, vm_config.code().remote().sha256(), true, get_blob_cb);
       } else {
         remote_data_provider = std::make_unique<RemoteAsyncDataProvider>(
             cluster_manager, init_manager, vm_config.code().remote(), dispatcher,
@@ -691,7 +707,8 @@ PluginConfig::PluginConfig(const envoy::extensions::wasm::v3::PluginConfig& conf
 
   if (!Common::Wasm::createWasm(plugin_, scope.createScope(""), context.clusterManager(),
                                 init_manager, context.mainThreadDispatcher(), context.api(),
-                                context.lifecycleNotifier(), remote_data_provider_, oci_data_provider_,
+                                context.lifecycleNotifier(), remote_data_provider_,
+                                oci_manifest_provider_, oci_blob_provider_,
                                 std::move(callback))) {
     // TODO(wbpcode): use absl::Status to return error rather than throw.
     throw Common::Wasm::WasmException(

@@ -16,25 +16,27 @@
 #include "source/common/init/target_impl.h"
 
 #include "absl/types/optional.h"
+#include <string>
 
 namespace Envoy {
 
 /**
- * Callback for async data source.
+ * Callback for async request for OCI image manifest.
  */
-using OciAsyncDataSourceCb = std::function<void(const std::string&)>;
+using OciManifestCb = std::function<void(const std::string&)>;
 
-class OciAsyncDataProvider : public Event::DeferredDeletable,
+class OciManifestProvider : public Event::DeferredDeletable,
                                 public Config::DataFetcher::RemoteDataFetcherCallback,
                                 public Logger::Loggable<Logger::Id::config> {
 public:
-  OciAsyncDataProvider(Upstream::ClusterManager& cm, Init::Manager& manager,
+  OciManifestProvider(Upstream::ClusterManager& cm, Init::Manager& manager,
                           const envoy::config::core::v3::HttpUri uri,
                           std::string token,
                           std::string sha256,
-                          bool allow_empty, OciAsyncDataSourceCb&& callback);
+                          bool allow_empty,
+                          OciManifestCb&& callback);
 
-  ~OciAsyncDataProvider() override {
+  ~OciManifestProvider() override {
     init_target_.ready();
     if (retry_timer_) {
       retry_timer_->disableTimer();
@@ -49,7 +51,7 @@ public:
 
   // Config::DataFetcher::RemoteDataFetcherCallback
   void onFailure(Config::DataFetcher::FailureReason failure) override {
-    ENVOY_LOG(debug, "Failed to fetch remote data, failure reason: {}", enumToInt(failure));
+    ENVOY_LOG(debug, "Failed to fetch OCI manifest, failure reason: {}", enumToInt(failure));
     if (retries_remaining_-- == 0) {
       ENVOY_LOG(warn, "Retry limit exceeded for fetching data from remote data source.");
       if (allow_empty_) {
@@ -69,7 +71,7 @@ private:
   void start() { fetcher_->fetch(); }
 
   bool allow_empty_;
-  OciAsyncDataSourceCb callback_;
+  OciManifestCb callback_;
   const Config::DataFetcher::OciFetcherPtr fetcher_;
   Init::TargetImpl init_target_;
 
@@ -78,6 +80,69 @@ private:
   uint32_t retries_remaining_;
 };
 
-using OciAsyncDataProviderPtr = std::unique_ptr<OciAsyncDataProvider>;
+using OciManifestProviderPtr = std::unique_ptr<OciManifestProvider>;
+
+/**
+ * Callback for async request for OCI image blob.
+ */
+using OciBlobCb = std::function<void(const std::string&)>;
+
+class OciBlobProvider : public Event::DeferredDeletable,
+                                public Config::DataFetcher::RemoteDataFetcherCallback,
+                                public Logger::Loggable<Logger::Id::config> {
+public:
+  OciBlobProvider(Upstream::ClusterManager& cm, Init::Manager& manager,
+                          const envoy::config::core::v3::HttpUri uri,
+                          std::string token,
+                          std::string digest,
+                          std::string sha256,
+                          bool allow_empty,
+                          OciBlobCb&& callback);
+
+  ~OciBlobProvider() override {
+    init_target_.ready();
+    if (retry_timer_) {
+      retry_timer_->disableTimer();
+    }
+  }
+
+  // Config::DataFetcher::RemoteDataFetcherCallback
+  void onSuccess(const std::string& data) override {
+    callback_(data);
+    init_target_.ready();
+  }
+
+  // Config::DataFetcher::RemoteDataFetcherCallback
+  void onFailure(Config::DataFetcher::FailureReason failure) override {
+    ENVOY_LOG(debug, "Failed to fetch OCI image blob, failure reason: {}", enumToInt(failure));
+    if (retries_remaining_-- == 0) {
+      ENVOY_LOG(warn, "Retry limit exceeded for fetching data from remote data source.");
+      if (allow_empty_) {
+        callback_(EMPTY_STRING);
+      }
+      // We need to allow server startup to continue.
+      init_target_.ready();
+      return;
+    }
+
+    const auto retry_ms = std::chrono::milliseconds(backoff_strategy_->nextBackOffMs());
+    ENVOY_LOG(debug, "Remote data provider will retry in {} ms.", retry_ms.count());
+    retry_timer_->enableTimer(retry_ms);
+  }
+
+private:
+  void start() { fetcher_->fetch(); }
+
+  bool allow_empty_;
+  OciBlobCb callback_;
+  const Config::DataFetcher::OciBlobFetcherPtr fetcher_;
+  Init::TargetImpl init_target_;
+
+  Event::TimerPtr retry_timer_;
+  BackOffStrategyPtr backoff_strategy_;
+  uint32_t retries_remaining_;
+};
+
+using OciBlobProviderPtr = std::unique_ptr<OciBlobProvider>;
 
 } // namespace Envoy

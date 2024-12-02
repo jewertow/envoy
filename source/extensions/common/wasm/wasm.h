@@ -174,7 +174,9 @@ bool createWasm(const PluginSharedPtr& plugin, const Stats::ScopeSharedPtr& scop
                 Event::Dispatcher& dispatcher, Api::Api& api,
                 Server::ServerLifecycleNotifier& lifecycle_notifier,
                 RemoteAsyncDataProviderPtr& remote_data_provider,
-                OciAsyncDataProviderPtr& oci_data_provider, CreateWasmCallback&& callback,
+                OciManifestProviderPtr& oci_manifest_provider,
+                OciBlobProviderPtr& oci_blob_provider,
+                CreateWasmCallback&& callback,
                 CreateContextFn create_root_context_for_testing = nullptr);
 
 PluginHandleSharedPtr
@@ -225,7 +227,8 @@ private:
   std::unique_ptr<JitteredLowerBoundBackOffStrategy> reload_backoff_;
   PluginSharedPtr plugin_;
   RemoteAsyncDataProviderPtr remote_data_provider_;
-  OciAsyncDataProviderPtr oci_data_provider_;
+  OciManifestProviderPtr oci_manifest_provider_;
+  OciBlobProviderPtr oci_blob_provider_;
   const bool is_singleton_handle_{};
   WasmHandleSharedPtr base_wasm_{};
   absl::variant<absl::monostate, SinglePluginHandle, ThreadLocalPluginHandle> plugin_handle_;
