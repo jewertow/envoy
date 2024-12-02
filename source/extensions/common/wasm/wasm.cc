@@ -12,6 +12,7 @@
 #include "source/common/runtime/runtime_features.h"
 #include "source/extensions/common/wasm/plugin.h"
 #include "source/extensions/common/wasm/remote_async_datasource.h"
+#include "source/extensions/common/wasm/oci_async_datasource.h"
 #include "source/extensions/common/wasm/stats_handler.h"
 
 #include "absl/strings/str_cat.h"
@@ -49,6 +50,22 @@ public:
 private:
   std::function<void(std::string)> cb_;
   std::unique_ptr<Config::DataFetcher::RemoteDataFetcher> fetcher_;
+};
+
+class OciFetcherAdapter : public Config::DataFetcher::RemoteDataFetcherCallback,
+                                 public Event::DeferredDeletable {
+public:
+  OciFetcherAdapter(std::function<void(std::string cb)> cb) : cb_(cb) {}
+  ~OciFetcherAdapter() override = default;
+  void onSuccess(const std::string& data) override { cb_(data); }
+  void onFailure(Config::DataFetcher::FailureReason) override { cb_(""); }
+  void setFetcher(std::unique_ptr<Config::DataFetcher::OciFetcher>&& fetcher) {
+    fetcher_ = std::move(fetcher);
+  }
+
+private:
+  std::function<void(std::string)> cb_;
+  std::unique_ptr<Config::DataFetcher::OciFetcher> fetcher_;
 };
 
 const std::string INLINE_STRING = "<inline>";
@@ -305,7 +322,8 @@ bool createWasm(const PluginSharedPtr& plugin, const Stats::ScopeSharedPtr& scop
                 Upstream::ClusterManager& cluster_manager, Init::Manager& init_manager,
                 Event::Dispatcher& dispatcher, Api::Api& api,
                 Server::ServerLifecycleNotifier& lifecycle_notifier,
-                RemoteAsyncDataProviderPtr& remote_data_provider, CreateWasmCallback&& cb,
+                RemoteAsyncDataProviderPtr& remote_data_provider,
+                OciAsyncDataProviderPtr& oci_data_provider, CreateWasmCallback&& cb,
                 CreateContextFn create_root_context_for_testing) {
   auto& stats_handler = getCreateStatsHandler();
   std::string source, code;
@@ -433,22 +451,60 @@ bool createWasm(const PluginSharedPtr& plugin, const Stats::ScopeSharedPtr& scop
       }
     };
     if (vm_config.nack_on_code_cache_miss()) {
-      auto adapter = std::make_unique<RemoteDataFetcherAdapter>(fetch_callback);
-      auto fetcher = std::make_unique<Config::DataFetcher::RemoteDataFetcher>(
-          cluster_manager, vm_config.code().remote().http_uri(), vm_config.code().remote().sha256(),
-          *adapter);
-      auto fetcher_ptr = fetcher.get();
-      adapter->setFetcher(std::move(fetcher));
-      *holder = std::move(adapter);
-      fetcher_ptr->fetch();
-      ENVOY_LOG_TO_LOGGER(Envoy::Logger::Registry::getLog(Envoy::Logger::Id::wasm), trace,
-                          fmt::format("Failed to load Wasm code (fetching) from {}", source));
-      cb(nullptr);
-      return false;
+      if (vm_config.code().remote().has_oci_image()) {
+        auto img_name = vm_config.code().remote().oci_image().image_name();
+        auto token = vm_config.code().remote().oci_image().token();
+        ENVOY_LOG_TO_LOGGER(Envoy::Logger::Registry::getLog(Envoy::Logger::Id::wasm), info,
+                            fmt::format("Fetching Wasm image {}", img_name));
+        envoy::config::core::v3::HttpUri uri;
+        uri.set_cluster("docker");
+        uri.set_uri("https://registry-1.docker.io/v2/jewe/envoy-filter-http-wasm-example/manifests/0.0.1");
+        uri.mutable_timeout()->set_seconds(10);
+
+        auto adapter = std::make_unique<OciFetcherAdapter>(fetch_callback);
+        auto fetcher = std::make_unique<Config::DataFetcher::OciFetcher>(
+            cluster_manager, uri, token, vm_config.code().remote().sha256(),
+            *adapter);
+        auto fetcher_ptr = fetcher.get();
+        adapter->setFetcher(std::move(fetcher));
+        *holder = std::move(adapter);
+        fetcher_ptr->fetch();
+        ENVOY_LOG_TO_LOGGER(Envoy::Logger::Registry::getLog(Envoy::Logger::Id::wasm), trace,
+                            fmt::format("Failed to load Wasm code (fetching) from {}", source));
+        cb(nullptr);
+        return false;
+      } else {
+        auto adapter = std::make_unique<RemoteDataFetcherAdapter>(fetch_callback);
+        auto fetcher = std::make_unique<Config::DataFetcher::RemoteDataFetcher>(
+            cluster_manager, vm_config.code().remote().http_uri(), vm_config.code().remote().sha256(),
+            *adapter);
+        auto fetcher_ptr = fetcher.get();
+        adapter->setFetcher(std::move(fetcher));
+        *holder = std::move(adapter);
+        fetcher_ptr->fetch();
+        ENVOY_LOG_TO_LOGGER(Envoy::Logger::Registry::getLog(Envoy::Logger::Id::wasm), trace,
+                            fmt::format("Failed to load Wasm code (fetching) from {}", source));
+        cb(nullptr);
+        return false;
+      }
     } else {
-      remote_data_provider = std::make_unique<RemoteAsyncDataProvider>(
-          cluster_manager, init_manager, vm_config.code().remote(), dispatcher,
-          api.randomGenerator(), true, fetch_callback);
+      if (vm_config.code().remote().has_oci_image()) {
+        auto img_name = vm_config.code().remote().oci_image().image_name();
+        ENVOY_LOG_TO_LOGGER(Envoy::Logger::Registry::getLog(Envoy::Logger::Id::wasm), info,
+                            fmt::format("Fetching Wasm image {}", img_name));
+
+        envoy::config::core::v3::HttpUri uri;
+        uri.set_cluster("docker");
+        uri.set_uri("https://registry-1.docker.io/v2/jewe/envoy-filter-http-wasm-example/manifests/0.0.1");
+        uri.mutable_timeout()->set_seconds(10);
+
+        oci_data_provider = std::make_unique<OciAsyncDataProvider>(
+            cluster_manager, init_manager, uri, vm_config.code().remote().oci_image().token(), vm_config.code().remote().sha256(), true, fetch_callback);
+      } else {
+        remote_data_provider = std::make_unique<RemoteAsyncDataProvider>(
+            cluster_manager, init_manager, vm_config.code().remote(), dispatcher,
+            api.randomGenerator(), true, fetch_callback);
+      }
     }
   } else {
     return complete_cb(code);
@@ -635,7 +691,7 @@ PluginConfig::PluginConfig(const envoy::extensions::wasm::v3::PluginConfig& conf
 
   if (!Common::Wasm::createWasm(plugin_, scope.createScope(""), context.clusterManager(),
                                 init_manager, context.mainThreadDispatcher(), context.api(),
-                                context.lifecycleNotifier(), remote_data_provider_,
+                                context.lifecycleNotifier(), remote_data_provider_, oci_data_provider_,
                                 std::move(callback))) {
     // TODO(wbpcode): use absl::Status to return error rather than throw.
     throw Common::Wasm::WasmException(

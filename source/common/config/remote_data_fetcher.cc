@@ -80,6 +80,79 @@ void RemoteDataFetcher::onFailure(const Http::AsyncClient::Request&,
   callback_.onFailure(FailureReason::Network);
 }
 
+OciFetcher::OciFetcher(Upstream::ClusterManager& cm,
+                                     const envoy::config::core::v3::HttpUri& uri,
+                                     const std::string& token,
+                                     const std::string& content_hash,
+                                     RemoteDataFetcherCallback& callback)
+    : cm_(cm), uri_(uri), token_(token), content_hash_(content_hash), callback_(callback) {}
+
+OciFetcher::~OciFetcher() { cancel(); }
+
+void OciFetcher::cancel() {
+  if (request_) {
+    request_->cancel();
+    ENVOY_LOG(debug, "fetch oci image [uri = {}]: canceled", uri_.uri());
+  }
+
+  request_ = nullptr;
+}
+
+void OciFetcher::fetch() {
+  Http::RequestMessagePtr message = Http::Utility::prepareHeaders(uri_);
+  message->headers().setReferenceMethod(Http::Headers::get().MethodValues.Get);
+  std::string bearer = "Bearer ";
+  absl::StrAppend(&bearer, token_);
+  message->headers().setAuthorization(bearer);
+  // TODO: add "accept: application/vnd.oci.image.manifest.v1+json"
+  ENVOY_LOG(info, "fetch oci image from [uri = {}]: start", uri_.uri());
+  const auto thread_local_cluster = cm_.getThreadLocalCluster(uri_.cluster());
+  if (thread_local_cluster != nullptr) {
+    request_ = thread_local_cluster->httpAsyncClient().send(
+        std::move(message), *this,
+        Http::AsyncClient::RequestOptions().setTimeout(
+            std::chrono::milliseconds(DurationUtil::durationToMilliseconds(uri_.timeout()))));
+  } else {
+    ENVOY_LOG(info, "fetch oci image [uri = {}]: no cluster {}", uri_.uri(), uri_.cluster());
+    callback_.onFailure(FailureReason::Network);
+  }
+}
+
+void OciFetcher::onSuccess(const Http::AsyncClient::Request&,
+                                  Http::ResponseMessagePtr&& response) {
+  const uint64_t status_code = Http::Utility::getResponseStatus(response->headers());
+  if (status_code == enumToInt(Http::Code::OK)) {
+    ENVOY_LOG(info, "fetch oci image [uri = {}, body = {}]: success", uri_.uri(), response->body().toString());
+    if (response->body().length() > 0) {
+      auto& crypto_util = Envoy::Common::Crypto::UtilitySingleton::get();
+      const auto content_hash = Hex::encode(crypto_util.getSha256Digest(response->body()));
+
+      if (content_hash_ != content_hash) {
+        ENVOY_LOG(info, "fetch oci image [uri = {}]: data is invalid", uri_.uri());
+        callback_.onFailure(FailureReason::InvalidData);
+      } else {
+        callback_.onSuccess(response->bodyAsString());
+      }
+    } else {
+      ENVOY_LOG(info, "fetch oci image [uri = {}]: body is empty", uri_.uri());
+      callback_.onFailure(FailureReason::Network);
+    }
+  } else {
+    ENVOY_LOG(info, "fetch oci image [uri = {}, body = {}]: response status code {}", uri_.uri(), response->body().toString(),
+              status_code);
+    callback_.onFailure(FailureReason::Network);
+  }
+
+  request_ = nullptr;
+}
+
+void OciFetcher::onFailure(const Http::AsyncClient::Request&,
+                                  Http::AsyncClient::FailureReason reason) {
+  ENVOY_LOG(info, "fetch oci image [uri = {}]: network error {}", uri_.uri(), enumToInt(reason));
+  request_ = nullptr;
+  callback_.onFailure(FailureReason::Network);
+}
+
 } // namespace DataFetcher
 } // namespace Config
 } // namespace Envoy

@@ -23,6 +23,7 @@
 #include "source/extensions/common/wasm/context.h"
 #include "source/extensions/common/wasm/plugin.h"
 #include "source/extensions/common/wasm/remote_async_datasource.h"
+#include "source/extensions/common/wasm/oci_async_datasource.h"
 #include "source/extensions/common/wasm/stats_handler.h"
 #include "source/extensions/common/wasm/wasm_vm.h"
 
@@ -172,7 +173,8 @@ bool createWasm(const PluginSharedPtr& plugin, const Stats::ScopeSharedPtr& scop
                 Upstream::ClusterManager& cluster_manager, Init::Manager& init_manager,
                 Event::Dispatcher& dispatcher, Api::Api& api,
                 Server::ServerLifecycleNotifier& lifecycle_notifier,
-                RemoteAsyncDataProviderPtr& remote_data_provider, CreateWasmCallback&& callback,
+                RemoteAsyncDataProviderPtr& remote_data_provider,
+                OciAsyncDataProviderPtr& oci_data_provider, CreateWasmCallback&& callback,
                 CreateContextFn create_root_context_for_testing = nullptr);
 
 PluginHandleSharedPtr
@@ -223,6 +225,7 @@ private:
   std::unique_ptr<JitteredLowerBoundBackOffStrategy> reload_backoff_;
   PluginSharedPtr plugin_;
   RemoteAsyncDataProviderPtr remote_data_provider_;
+  OciAsyncDataProviderPtr oci_data_provider_;
   const bool is_singleton_handle_{};
   WasmHandleSharedPtr base_wasm_{};
   absl::variant<absl::monostate, SinglePluginHandle, ThreadLocalPluginHandle> plugin_handle_;
