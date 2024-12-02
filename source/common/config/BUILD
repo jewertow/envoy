@@ -147,6 +147,7 @@ envoy_cc_library(
         "//source/common/common:hex_lib",
         "//source/common/crypto:utility_lib",
         "//source/common/http:utility_lib",
+        "//source/common/json:json_loader_lib",
         "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
     ],
 )

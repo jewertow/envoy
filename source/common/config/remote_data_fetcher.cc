@@ -7,6 +7,7 @@
 #include "source/common/crypto/utility.h"
 #include "source/common/http/headers.h"
 #include "source/common/http/utility.h"
+#include "source/common/json/json_loader.h"
 
 namespace Envoy {
 namespace Config {
@@ -127,12 +128,31 @@ void OciFetcher::onSuccess(const Http::AsyncClient::Request&,
       auto& crypto_util = Envoy::Common::Crypto::UtilitySingleton::get();
       const auto content_hash = Hex::encode(crypto_util.getSha256Digest(response->body()));
 
-      if (content_hash_ != content_hash) {
-        ENVOY_LOG(info, "fetch oci image [uri = {}]: data is invalid", uri_.uri());
-        callback_.onFailure(FailureReason::InvalidData);
-      } else {
-        callback_.onSuccess(response->bodyAsString());
+      // TODO(jewertow)
+      // if (content_hash_ != content_hash) {
+      //   ENVOY_LOG(info, "fetch oci image [uri = {}]: data is invalid", uri_.uri());
+      //   callback_.onFailure(FailureReason::InvalidData);
+      // } else {
+      std::string body = response->bodyAsString();
+      // Parse manifests response
+      if (!body.empty()) {
+        try {
+          Json::ObjectSharedPtr json_body =
+              THROW_OR_RETURN_VALUE(Json::Factory::loadFromString(body), Json::ObjectSharedPtr);
+          auto layers = THROW_OR_RETURN_VALUE(json_body->getObjectArray("layers"),
+                                    std::vector<Json::ObjectSharedPtr>);
+          auto digest = layers[0]->getString("digest", "");
+          if (digest->empty()) {
+            ENVOY_LOG(error, "fetch oci image [uri = {}, body = {}]: could not parse digest", uri_.uri(), response->body().toString());  
+          } else {
+            ENVOY_LOG(info, "fetch oci image [uri = {}, digest = {}]: found digest", uri_.uri(), digest->c_str());
+          }
+        } catch (...) {
+          ENVOY_LOG(error, "fetch oci image [uri = {}, body = {}]: failed to parse response body to JSON", uri_.uri(), response->body().toString());
+        }
       }
+
+      callback_.onSuccess(body);
     } else {
       ENVOY_LOG(info, "fetch oci image [uri = {}]: body is empty", uri_.uri());
       callback_.onFailure(FailureReason::Network);
