@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <memory>
 
 #include "envoy/event/deferred_deletable.h"
 #include "envoy/extensions/wasm/v3/wasm.pb.h"
@@ -11,10 +10,13 @@
 #include "source/common/common/logger.h"
 #include "source/common/network/dns_resolver/dns_factory_util.h"
 #include "source/common/runtime/runtime_features.h"
+#include "source/common/secret/secret_provider_impl.h"
 #include "source/extensions/common/wasm/plugin.h"
 #include "source/extensions/common/wasm/remote_async_datasource.h"
 #include "source/extensions/common/wasm/oci_async_datasource.h"
 #include "source/extensions/common/wasm/stats_handler.h"
+#include "envoy/secret/secret_manager.h"
+#include "envoy/secret/secret_provider.h"
 
 #include "absl/strings/str_cat.h"
 
@@ -29,6 +31,22 @@ namespace Extensions {
 namespace Common {
 namespace Wasm {
 namespace {
+
+Secret::GenericSecretConfigProviderSharedPtr
+secretsProvider(const envoy::extensions::transport_sockets::tls::v3::SdsSecretConfig& config,
+                Secret::SecretManager& secret_manager,
+                Server::Configuration::TransportSocketFactoryContext* transport_socket_factory,
+                Init::Manager& init_manager) {
+  if (transport_socket_factory == nullptr) {
+    throw EnvoyException("WASM plugins with secret cannot be used in outbound filters");
+  }
+  if (config.has_sds_config()) {
+    return secret_manager.findOrCreateGenericSecretProvider(config.sds_config(), config.name(),
+                                                            *transport_socket_factory, init_manager);
+  } else {
+    return secret_manager.findStaticGenericSecretProvider(config.name());
+  }
+}
 
 struct CodeCacheEntry {
   std::string code;
@@ -321,7 +339,8 @@ WasmEvent toWasmEvent(const std::shared_ptr<WasmHandleBase>& wasm) {
 
 bool createWasm(const PluginSharedPtr& plugin, const Stats::ScopeSharedPtr& scope,
                 Upstream::ClusterManager& cluster_manager, Init::Manager& init_manager,
-                Event::Dispatcher& dispatcher, Api::Api& api,
+                Server::Configuration::TransportSocketFactoryContext* transport_socket_factory,
+                Event::Dispatcher& dispatcher, ThreadLocal::SlotAllocator& slot_alloc, Api::Api& api,
                 Server::ServerLifecycleNotifier& lifecycle_notifier,
                 RemoteAsyncDataProviderPtr& remote_data_provider,
                 OciManifestProviderPtr& oci_manifest_provider,
@@ -333,12 +352,16 @@ bool createWasm(const PluginSharedPtr& plugin, const Stats::ScopeSharedPtr& scop
   auto config = plugin->wasmConfig();
   auto vm_config = config.config().vm_config();
   bool fetch = false;
+  bool is_oci = false;
   if (vm_config.code().has_remote()) {
     // TODO(https://github.com/envoyproxy/envoy/issues/25052) Stabilize this feature.
     ENVOY_LOG_TO_LOGGER(Envoy::Logger::Registry::getLog(Envoy::Logger::Id::wasm), warn,
                         "Wasm remote code fetch is unstable and may cause a crash");
     auto now = dispatcher.timeSource().monotonicTime() + cache_time_offset_for_testing;
     source = vm_config.code().remote().http_uri().uri();
+    if (absl::StartsWith(source, "oci://")) {
+      is_oci = true;
+    }
     std::lock_guard<std::mutex> guard(code_cache_mutex);
     if (!code_cache) {
       code_cache = new std::remove_reference<decltype(*code_cache)>::type;
@@ -454,68 +477,67 @@ bool createWasm(const PluginSharedPtr& plugin, const Stats::ScopeSharedPtr& scop
       }
     };
     if (vm_config.nack_on_code_cache_miss()) {
-      if (vm_config.code().remote().has_oci_image()) {
-        auto img_name = vm_config.code().remote().oci_image().image_name();
-        auto token = vm_config.code().remote().oci_image().token();
-        ENVOY_LOG_TO_LOGGER(Envoy::Logger::Registry::getLog(Envoy::Logger::Id::wasm), info,
-                            fmt::format("Fetching Wasm image {}", img_name));
-        envoy::config::core::v3::HttpUri uri;
-        uri.set_cluster("docker");
-        uri.set_uri("https://registry-1.docker.io/v2/jewe/envoy-filter-http-wasm-example/manifests/0.0.1");
-        uri.mutable_timeout()->set_seconds(10);
-
-        auto adapter = std::make_unique<OciFetcherAdapter>(fetch_callback);
-        auto fetcher = std::make_unique<Config::DataFetcher::OciFetcher>(
-            cluster_manager, uri, token, vm_config.code().remote().sha256(),
-            *adapter);
-        auto fetcher_ptr = fetcher.get();
-        adapter->setFetcher(std::move(fetcher));
-        *holder = std::move(adapter);
-        fetcher_ptr->fetch();
-        ENVOY_LOG_TO_LOGGER(Envoy::Logger::Registry::getLog(Envoy::Logger::Id::wasm), trace,
-                            fmt::format("Failed to load Wasm code (fetching) from {}", source));
-        cb(nullptr);
-        return false;
-      } else {
-        auto adapter = std::make_unique<RemoteDataFetcherAdapter>(fetch_callback);
-        auto fetcher = std::make_unique<Config::DataFetcher::RemoteDataFetcher>(
-            cluster_manager, vm_config.code().remote().http_uri(), vm_config.code().remote().sha256(),
-            *adapter);
-        auto fetcher_ptr = fetcher.get();
-        adapter->setFetcher(std::move(fetcher));
-        *holder = std::move(adapter);
-        fetcher_ptr->fetch();
-        ENVOY_LOG_TO_LOGGER(Envoy::Logger::Registry::getLog(Envoy::Logger::Id::wasm), trace,
-                            fmt::format("Failed to load Wasm code (fetching) from {}", source));
-        cb(nullptr);
-        return false;
-      }
+      auto adapter = std::make_unique<RemoteDataFetcherAdapter>(fetch_callback);
+      auto fetcher = std::make_unique<Config::DataFetcher::RemoteDataFetcher>(
+          cluster_manager, vm_config.code().remote().http_uri(), vm_config.code().remote().sha256(),
+          *adapter);
+      auto fetcher_ptr = fetcher.get();
+      adapter->setFetcher(std::move(fetcher));
+      *holder = std::move(adapter);
+      fetcher_ptr->fetch();
+      ENVOY_LOG_TO_LOGGER(Envoy::Logger::Registry::getLog(Envoy::Logger::Id::wasm), trace,
+                          fmt::format("Failed to load Wasm code (fetching) from {}", source));
+      cb(nullptr);
+      return false;
     } else {
-      if (vm_config.code().remote().has_oci_image()) {
-        auto img_name = vm_config.code().remote().oci_image().image_name();
-        auto token = vm_config.code().remote().oci_image().token();
+      if (is_oci) {
+        std::string registry, image_name, tag;
+        parseOCIImageURI(source, registry, image_name, tag);
         ENVOY_LOG_TO_LOGGER(Envoy::Logger::Registry::getLog(Envoy::Logger::Id::wasm), info,
-                            fmt::format("Fetching Wasm image {}", img_name));
+                            fmt::format("Fetching Wasm image {}:{} from {}", image_name, tag, registry));
 
-        envoy::config::core::v3::HttpUri uri;
-        uri.set_cluster("docker");
-        uri.set_uri("https://registry-1.docker.io/v2/jewe/envoy-filter-http-wasm-example/manifests/0.0.1");
-        uri.mutable_timeout()->set_seconds(10);
+        envoy::config::core::v3::HttpUri manifest_uri;
+        manifest_uri.set_cluster(vm_config.code().remote().http_uri().cluster());
+        manifest_uri.set_uri(absl::StrFormat("https://%s/v2/%s/manifests/%s", registry, image_name, tag));
+        manifest_uri.mutable_timeout()->set_seconds(vm_config.code().remote().http_uri().timeout().seconds());
 
-        auto get_blob_cb = [&oci_blob_provider, &cluster_manager, &init_manager, token, fetch_callback](const std::string digest) {
-          std::string blob_uri = "https://registry-1.docker.io/v2/jewe/envoy-filter-http-wasm-example/blobs/";
-          absl::StrAppend(&blob_uri, digest);
+        auto username = vm_config.basic_credentials().user();
+        auto& password_secret = vm_config.basic_credentials().password();
 
-          envoy::config::core::v3::HttpUri uri;
-          uri.set_cluster("docker");
-          uri.set_uri(blob_uri);
-          uri.mutable_timeout()->set_seconds(10);
+        auto password_secret_provider = secretsProvider(password_secret,
+          cluster_manager.clusterManagerFactory().secretManager(),
+          transport_socket_factory, init_manager);
+        
+        if (password_secret_provider == nullptr) {
+          throw EnvoyException("Secret provider for Wasm plugin is null");
+        }
+        Secret::ThreadLocalGenericSecretProvider secret_reader(
+          std::move(password_secret_provider), slot_alloc, api);
+        auto& password = secret_reader.secret();
+        if (password.empty()) {
+          throw EnvoyException("Invalid secret configuration - password is empty");
+        }
 
-          oci_blob_provider = std::make_unique<OciBlobProvider>(cluster_manager, init_manager, uri, token, digest, "", false, fetch_callback);
+        ENVOY_LOG_TO_LOGGER(Envoy::Logger::Registry::getLog(Envoy::Logger::Id::wasm), info,
+                        "Basic auth: user = {} password = {}", username, password);
+        
+        std::string base64_user_passwd;
+        absl::Base64Escape(absl::StrFormat("%s:%s", username, password), &base64_user_passwd);
+        std::string basic_authz_header = absl::StrFormat("Basic %s", base64_user_passwd);
+
+        auto get_blob_cb = [&oci_blob_provider, &cluster_manager, &init_manager, &vm_config, basic_authz_header, fetch_callback,
+          registry, &image_name](const std::string& digest) {
+          
+          envoy::config::core::v3::HttpUri blob_uri;
+          blob_uri.set_cluster(vm_config.code().remote().http_uri().cluster());
+          blob_uri.set_uri(absl::StrFormat("https://%s/v2/%s/blobs/%s", registry, image_name, digest));
+          blob_uri.mutable_timeout()->set_seconds(vm_config.code().remote().http_uri().timeout().seconds());
+
+          oci_blob_provider = std::make_unique<OciBlobProvider>(cluster_manager, init_manager, blob_uri, basic_authz_header, digest, "", false, fetch_callback);
         };
 
         oci_manifest_provider = std::make_unique<OciManifestProvider>(
-            cluster_manager, init_manager, uri, token, vm_config.code().remote().sha256(), true, get_blob_cb);
+            cluster_manager, init_manager, manifest_uri, basic_authz_header, vm_config.code().remote().sha256(), true, get_blob_cb);
       } else {
         remote_data_provider = std::make_unique<RemoteAsyncDataProvider>(
             cluster_manager, init_manager, vm_config.code().remote(), dispatcher,
@@ -526,6 +548,36 @@ bool createWasm(const PluginSharedPtr& plugin, const Stats::ScopeSharedPtr& scop
     return complete_cb(code);
   }
   return true;
+}
+
+// Function to parse OCI image URI into components
+void parseOCIImageURI(const std::string& uri, std::string& registry, std::string& image_name,
+                      std::string& tag) {
+  const std::string prefix = "oci://";
+  if (!absl::StartsWith(uri, prefix)) {
+    // TODO(jewertow): handle it better
+    ENVOY_LOG_TO_LOGGER(Envoy::Logger::Registry::getLog(Envoy::Logger::Id::wasm), error,
+                        "Failed to load Wasm plugin - URI does not include oci scheme: {}", uri);
+  }
+  std::string without_prefix = uri.substr(prefix.length());
+
+  size_t slash_pos = without_prefix.find('/');
+  if (slash_pos == std::string::npos) {
+    // TODO(jewertow): handle it better
+    ENVOY_LOG_TO_LOGGER(Envoy::Logger::Registry::getLog(Envoy::Logger::Id::wasm), error,
+                        "Failed to load Wasm plugin - URI does not include '/': {}", uri);
+  }
+  registry = without_prefix.substr(0, slash_pos);
+
+  
+  size_t colon_pos = without_prefix.find_last_of(':');
+  if (colon_pos == std::string::npos || colon_pos < slash_pos + 1) {
+    // TODO(jewertow): handle it better
+    ENVOY_LOG_TO_LOGGER(Envoy::Logger::Registry::getLog(Envoy::Logger::Id::wasm), error,
+                        "Failed to load Wasm plugin - URI does not include ':': {}", uri);
+  }
+  image_name = without_prefix.substr(slash_pos + 1, colon_pos - (slash_pos + 1));
+  tag = without_prefix.substr(colon_pos + 1);
 }
 
 PluginHandleSharedPtr
@@ -632,11 +684,11 @@ std::pair<OptRef<PluginConfig::SinglePluginHandle>, Wasm*> PluginConfig::getPlug
 
 PluginConfig::PluginConfig(const envoy::extensions::wasm::v3::PluginConfig& config,
                            Server::Configuration::ServerFactoryContext& context,
+                           Server::Configuration::TransportSocketFactoryContext* transport_socket_factory,
                            Stats::Scope& scope, Init::Manager& init_manager,
                            envoy::config::core::v3::TrafficDirection direction,
                            const envoy::config::core::v3::Metadata* metadata, bool singleton)
     : is_singleton_handle_(singleton) {
-
   if (config.fail_open()) {
     // If the legacy fail_open is set to true explicitly.
 
@@ -706,7 +758,8 @@ PluginConfig::PluginConfig(const envoy::extensions::wasm::v3::PluginConfig& conf
   };
 
   if (!Common::Wasm::createWasm(plugin_, scope.createScope(""), context.clusterManager(),
-                                init_manager, context.mainThreadDispatcher(), context.api(),
+                                init_manager, transport_socket_factory, context.mainThreadDispatcher(),
+                                context.threadLocal(), context.api(),
                                 context.lifecycleNotifier(), remote_data_provider_,
                                 oci_manifest_provider_, oci_blob_provider_,
                                 std::move(callback))) {

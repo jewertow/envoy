@@ -5,7 +5,6 @@ package envoy.config.core.v3;
 import "envoy/config/core/v3/address.proto";
 import "envoy/config/core/v3/backoff.proto";
 import "envoy/config/core/v3/http_uri.proto";
-import "envoy/config/core/v3/oci_registry.proto";
 import "envoy/type/v3/percent.proto";
 import "envoy/type/v3/semantic_version.proto";
 
@@ -552,14 +551,8 @@ message RetryPolicy {
 message RemoteDataSource {
   option (udpa.annotations.versioning).previous_message_type = "envoy.api.v2.core.RemoteDataSource";
 
-  oneof specifier {
-    option (validate.required) = true;
-
-    // The HTTP URI to fetch the remote data.
-    HttpUri http_uri = 1;
-
-    OciImage oci_image = 4;
-  }
+  // The HTTP URI to fetch the remote data.
+  HttpUri http_uri = 1 [(validate.rules).message = {required: true}];
 
   // SHA256 string for verifying data.
   string sha256 = 2 [(validate.rules).string = {min_len: 1}];

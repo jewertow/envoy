@@ -41,6 +41,7 @@ envoy_cc_library(
         "//source/common/config:datasource_lib",
         "//source/common/crypto:utility_lib",
         "//source/common/protobuf:utility_lib",
+        "//source/common/secret:secret_provider_impl_lib",
         "//source/common/singleton:const_singleton",
         "//source/common/stats:stats_lib",
         "//source/common/version:version_includes",

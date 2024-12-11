@@ -84,10 +84,10 @@ void RemoteDataFetcher::onFailure(const Http::AsyncClient::Request&,
 
 OciFetcher::OciFetcher(Upstream::ClusterManager& cm,
                                      const envoy::config::core::v3::HttpUri& uri,
-                                     const std::string& token,
+                                     const std::string& authz_header_value,
                                      const std::string& content_hash,
                                      RemoteDataFetcherCallback& callback)
-    : cm_(cm), uri_(uri), token_(token), content_hash_(content_hash), callback_(callback) {}
+    : cm_(cm), uri_(uri), authz_header_value_(authz_header_value), content_hash_(content_hash), callback_(callback) {}
 
 OciFetcher::~OciFetcher() { cancel(); }
 
@@ -103,9 +103,7 @@ void OciFetcher::cancel() {
 void OciFetcher::fetch() {
   Http::RequestMessagePtr message = Http::Utility::prepareHeaders(uri_);
   message->headers().setReferenceMethod(Http::Headers::get().MethodValues.Get);
-  std::string bearer = "Bearer ";
-  absl::StrAppend(&bearer, token_);
-  message->headers().setAuthorization(bearer);
+  message->headers().setAuthorization(authz_header_value_);
   // TODO: add "accept: application/vnd.oci.image.manifest.v1+json"
   ENVOY_LOG(info, "fetch oci image from [uri = {}]: start", uri_.uri());
   const auto thread_local_cluster = cm_.getThreadLocalCluster(uri_.cluster());
@@ -176,11 +174,11 @@ void OciFetcher::onFailure(const Http::AsyncClient::Request&,
 
 OciBlobFetcher::OciBlobFetcher(Upstream::ClusterManager& cm,
                                      const envoy::config::core::v3::HttpUri& uri,
-                                     const std::string& token,
+                                     const std::string& authz_header_value,
                                      const std::string& digest,
                                      const std::string& content_hash,
                                      RemoteDataFetcherCallback& callback)
-    : cm_(cm), uri_(uri), token_(token), digest_(digest), content_hash_(content_hash), callback_(callback) {}
+    : cm_(cm), uri_(uri), authz_header_value_(authz_header_value), digest_(digest), content_hash_(content_hash), callback_(callback) {}
 
 OciBlobFetcher::~OciBlobFetcher() { cancel(); }
 
@@ -196,9 +194,7 @@ void OciBlobFetcher::cancel() {
 void OciBlobFetcher::fetch() {
   Http::RequestMessagePtr message = Http::Utility::prepareHeaders(uri_);
   message->headers().setReferenceMethod(Http::Headers::get().MethodValues.Get);
-  std::string bearer = "Bearer ";
-  absl::StrAppend(&bearer, token_);
-  message->headers().setAuthorization(bearer);
+  message->headers().setAuthorization(authz_header_value_);
   // TODO: add "accept: application/vnd.oci.image.manifest.v1+json"
   ENVOY_LOG(info, "fetch oci image blob from [uri = {}]: start", uri_.uri());
   const auto thread_local_cluster = cm_.getThreadLocalCluster(uri_.cluster());
@@ -232,37 +228,6 @@ void OciBlobFetcher::onSuccess(const Http::AsyncClient::Request&,
     } else {
       ENVOY_LOG(info, "fetch oci image blob [uri = {}]: body is empty", uri_.uri());
       callback_.onFailure(FailureReason::Network);
-    }
-  } else if (status_code == enumToInt(Http::Code::TemporaryRedirect)) {
-    auto location = response->headers().get(Http::Headers::get().Location);
-    if (location.empty()) {
-      ENVOY_LOG(error, "fetch oci image blob [uri = {}, status code = {}]: location empty", uri_.uri(), status_code);
-      callback_.onFailure(FailureReason::Network);
-    } else {
-      auto location_value = location[0]->value().getStringView();
-      ENVOY_LOG(error, "fetch oci image blob [uri = {}, status code = {}]: redirected to {}", uri_.uri(), status_code, location_value);
-      
-      envoy::config::core::v3::HttpUri uri;
-      uri.set_cluster("dynamic_forward_proxy");
-      uri.set_uri(location_value);
-
-      Http::RequestMessagePtr message = Http::Utility::prepareHeaders(uri);
-      message->headers().setReferenceMethod(Http::Headers::get().MethodValues.Get);
-      std::string bearer = "Bearer ";
-      absl::StrAppend(&bearer, token_);
-      message->headers().setAuthorization(bearer);
-
-      ENVOY_LOG(info, "fetch oci image blob from temporary location [uri = {}]: start", uri.uri());
-      const auto thread_local_cluster = cm_.getThreadLocalCluster(uri.cluster());
-      if (thread_local_cluster != nullptr) {
-        request_ = thread_local_cluster->httpAsyncClient().send(
-        std::move(message), *this,
-        Http::AsyncClient::RequestOptions().setTimeout(
-            std::chrono::milliseconds(DurationUtil::durationToMilliseconds(uri.timeout()))));
-      } else {
-        ENVOY_LOG(info, "fetch oci image blob [uri = {}]: no cluster {}", uri_.uri(), uri_.cluster());
-        callback_.onFailure(FailureReason::Network);
-      }
     }
   } else {
     ENVOY_LOG(info, "fetch oci image blob [uri = {}, body = {}]: response status code {}", uri_.uri(), response->body().toString(),

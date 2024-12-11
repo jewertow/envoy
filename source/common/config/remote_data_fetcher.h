@@ -88,7 +88,7 @@ class OciBlobFetcher : public Logger::Loggable<Logger::Id::config>,
                           public Http::AsyncClient::Callbacks {
 public:
   OciBlobFetcher(Upstream::ClusterManager& cm, const envoy::config::core::v3::HttpUri& uri,
-                    const std::string& token, const std::string& digest, const std::string& content_hash,
+                    const std::string& authz_header_value, const std::string& digest, const std::string& content_hash,
                     RemoteDataFetcherCallback& callback);
 
   ~OciBlobFetcher() override;
@@ -116,7 +116,7 @@ public:
 private:
   Upstream::ClusterManager& cm_;
   const envoy::config::core::v3::HttpUri uri_;
-  const std::string token_;
+  const std::string authz_header_value_;
   const std::string digest_;
   const std::string content_hash_;
   RemoteDataFetcherCallback& callback_;
@@ -161,7 +161,7 @@ public:
 private:
   Upstream::ClusterManager& cm_;
   const envoy::config::core::v3::HttpUri uri_;
-  const std::string token_;
+  const std::string authz_header_value_;
   const std::string content_hash_;
   RemoteDataFetcherCallback& callback_;
 
