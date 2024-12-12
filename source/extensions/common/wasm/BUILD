@@ -84,7 +84,7 @@ envoy_cc_library(
         "//envoy/upstream:cluster_manager_interface",
         "//source/common/common:backoff_lib",
         "//source/common/common:empty_string",
-        "//source/common/config:oci_image_manifest_fetcher_lib",
+        "//source/common/config:oci_image_fetcher_lib",
         "//source/common/config:utility_lib",
         "//source/common/init:target_lib",
         "//source/common/protobuf:utility_lib",

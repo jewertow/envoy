@@ -81,51 +81,6 @@ private:
 
 using RemoteDataFetcherPtr = std::unique_ptr<RemoteDataFetcher>;
 
-/**
- * OCI blob fetcher.
- */
-class OciBlobFetcher : public Logger::Loggable<Logger::Id::config>,
-                          public Http::AsyncClient::Callbacks {
-public:
-  OciBlobFetcher(Upstream::ClusterManager& cm, const envoy::config::core::v3::HttpUri& uri,
-                    const std::string& authz_header_value, const std::string& digest, const std::string& content_hash,
-                    RemoteDataFetcherCallback& callback);
-
-  ~OciBlobFetcher() override;
-
-  // Http::AsyncClient::Callbacks
-  void onSuccess(const Http::AsyncClient::Request&, Http::ResponseMessagePtr&& response) override;
-  void onFailure(const Http::AsyncClient::Request&,
-                 Http::AsyncClient::FailureReason reason) override;
-  void onBeforeFinalizeUpstreamSpan(Envoy::Tracing::Span&,
-                                    const Http::ResponseHeaderMap*) override {}
-
-  /**
-   * Fetch OCI image.
-   * @param uri remote URI
-   * @param content_hash for verifying data integrity
-   * @param callback callback when fetch is done.
-   */
-  void fetch();
-
-  /**
-   * Cancel the fetch.
-   */
-  void cancel();
-
-private:
-  Upstream::ClusterManager& cm_;
-  const envoy::config::core::v3::HttpUri uri_;
-  const std::string authz_header_value_;
-  const std::string digest_;
-  const std::string content_hash_;
-  RemoteDataFetcherCallback& callback_;
-
-  Http::AsyncClient::Request* request_{};
-};
-
-using OciBlobFetcherPtr = std::unique_ptr<OciBlobFetcher>;
-
 } // namespace DataFetcher
 } // namespace Config
 } // namespace Envoy
