@@ -3,7 +3,6 @@
 #include "envoy/common/pure.h"
 #include "envoy/config/core/v3/http_uri.pb.h"
 #include "envoy/upstream/cluster_manager.h"
-#include <string>
 
 namespace Envoy {
 namespace Config {

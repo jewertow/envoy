@@ -7,8 +7,6 @@
 #include "source/common/crypto/utility.h"
 #include "source/common/http/headers.h"
 #include "source/common/http/utility.h"
-#include "source/common/json/json_loader.h"
-#include <memory>
 
 namespace Envoy {
 namespace Config {
