@@ -12,7 +12,7 @@
 #include "source/common/common/backoff_strategy.h"
 #include "source/common/common/empty_string.h"
 #include "source/common/common/enum_to_int.h"
-#include "source/common/config/remote_data_fetcher.h"
+#include "source/common/config/oci_image_manifest_fetcher.h"
 #include "source/common/init/target_impl.h"
 
 #include "absl/types/optional.h"
@@ -72,7 +72,7 @@ private:
 
   bool allow_empty_;
   OciManifestCb callback_;
-  const Config::DataFetcher::OciFetcherPtr fetcher_;
+  const Config::DataFetcher::OciImageManifestFetcherPtr fetcher_;
   Init::TargetImpl init_target_;
 
   Event::TimerPtr retry_timer_;

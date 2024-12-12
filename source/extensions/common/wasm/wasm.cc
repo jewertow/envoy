@@ -71,22 +71,6 @@ private:
   std::unique_ptr<Config::DataFetcher::RemoteDataFetcher> fetcher_;
 };
 
-class OciFetcherAdapter : public Config::DataFetcher::RemoteDataFetcherCallback,
-                                 public Event::DeferredDeletable {
-public:
-  OciFetcherAdapter(std::function<void(std::string cb)> cb) : cb_(cb) {}
-  ~OciFetcherAdapter() override = default;
-  void onSuccess(const std::string& data) override { cb_(data); }
-  void onFailure(Config::DataFetcher::FailureReason) override { cb_(""); }
-  void setFetcher(std::unique_ptr<Config::DataFetcher::OciFetcher>&& fetcher) {
-    fetcher_ = std::move(fetcher);
-  }
-
-private:
-  std::function<void(std::string)> cb_;
-  std::unique_ptr<Config::DataFetcher::OciFetcher> fetcher_;
-};
-
 const std::string INLINE_STRING = "<inline>";
 const int CODE_CACHE_SECONDS_NEGATIVE_CACHING = 10;
 const int CODE_CACHE_SECONDS_CACHING_TTL = 24 * 3600; // 24 hours.
