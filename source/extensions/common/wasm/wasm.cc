@@ -525,8 +525,14 @@ bool createWasm(const PluginSharedPtr& plugin, const Stats::ScopeSharedPtr& scop
         absl::Base64Escape(absl::StrFormat("%s:%s", username, password), &base64_user_passwd);
         std::string basic_authz_header = absl::StrFormat("Basic %s", base64_user_passwd);
 
-        auto get_blob_cb = [&oci_blob_provider, &cluster_manager, &init_manager, &vm_config, basic_authz_header, fetch_callback,
-          registry, &image_name](const std::string& digest) {
+        auto get_blob_cb = [&oci_blob_provider, &cluster_manager, &init_manager, vm_config, basic_authz_header, fetch_callback,
+          registry, image_name](const std::string& digest) {
+
+          if (digest.empty()) {
+            ENVOY_LOG_TO_LOGGER(Envoy::Logger::Registry::getLog(Envoy::Logger::Id::wasm), error,
+                                "cannot get image blob - image digest is empty");
+            return;
+          }
           
           envoy::config::core::v3::HttpUri blob_uri;
           blob_uri.set_cluster(vm_config.code().remote().http_uri().cluster());
