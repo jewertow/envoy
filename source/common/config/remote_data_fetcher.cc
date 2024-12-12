@@ -229,6 +229,34 @@ void OciBlobFetcher::onSuccess(const Http::AsyncClient::Request&,
       ENVOY_LOG(info, "fetch oci image blob [uri = {}]: body is empty", uri_.uri());
       callback_.onFailure(FailureReason::Network);
     }
+  } else if (status_code == enumToInt(Http::Code::TemporaryRedirect)) {
+    auto location = response->headers().get(Http::Headers::get().Location);
+    if (location.empty()) {
+      ENVOY_LOG(error, "fetch oci image blob [uri = {}, status code = {}]: location empty", uri_.uri(), status_code);
+      callback_.onFailure(FailureReason::Network);
+    } else {
+      auto location_value = location[0]->value().getStringView();
+      ENVOY_LOG(error, "fetch oci image blob [uri = {}, status code = {}]: redirected to {}", uri_.uri(), status_code, location_value);
+
+      envoy::config::core::v3::HttpUri uri;
+      uri.set_cluster("oci_registry_blob_redirect_location");
+      uri.set_uri(location_value);
+      Http::RequestMessagePtr message = Http::Utility::prepareHeaders(uri);
+      message->headers().setReferenceMethod(Http::Headers::get().MethodValues.Get);
+      // TODO(jewertow): set Authorization header if the token is not included in the URL path, e.g. docker hub.
+      ENVOY_LOG(info, "fetch oci image blob from temporary location [uri = {}]: start", uri.uri());
+
+      const auto thread_local_cluster = cm_.getThreadLocalCluster(uri.cluster());
+      if (thread_local_cluster != nullptr) {
+        request_ = thread_local_cluster->httpAsyncClient().send(
+        std::move(message), *this,
+        Http::AsyncClient::RequestOptions().setTimeout(
+            std::chrono::milliseconds(DurationUtil::durationToMilliseconds(uri.timeout()))));
+      } else {
+        ENVOY_LOG(info, "fetch oci image blob [uri = {}]: no cluster {}", uri_.uri(), uri_.cluster());
+        callback_.onFailure(FailureReason::Network);
+      }
+    }
   } else {
     ENVOY_LOG(info, "fetch oci image blob [uri = {}, body = {}]: response status code {}", uri_.uri(), response->body().toString(),
               status_code);
