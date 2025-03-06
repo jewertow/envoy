@@ -558,10 +558,55 @@ std::pair<OptRef<PluginConfig::SinglePluginHandle>, Wasm*> PluginConfig::getPlug
   return {plugin_handle_holder, maybeReloadHandleIfNeeded(*plugin_handle_holder)};
 }
 
+absl::StatusOr<PluginConfigPtr>
+PluginConfig::create(const envoy::extensions::wasm::v3::PluginConfig& config,
+                     Server::Configuration::ServerFactoryContext& context, Stats::Scope& scope,
+                     Init::Manager& init_manager,
+                     envoy::config::core::v3::TrafficDirection direction,
+                     const envoy::config::core::v3::Metadata* metadata, bool singleton) {
+  auto plugin_config = new PluginConfig(config, context, scope, direction, metadata, singleton);
+
+  auto create_wasm_cb = [plugin_config, &context](WasmHandleSharedPtr base_wasm) {
+    plugin_config->base_wasm_ = base_wasm;
+
+    if (base_wasm == nullptr) {
+      ENVOY_LOG(critical, "Plugin {} failed to load", plugin_config->plugin_->name_);
+    }
+
+    if (plugin_config->is_singleton_handle_) {
+      plugin_config->plugin_handle_ =
+          SinglePluginHandle(getOrCreateThreadLocalPlugin(base_wasm, plugin_config->plugin_,
+                                                          context.mainThreadDispatcher()),
+                             context.mainThreadDispatcher().timeSource().monotonicTime());
+      return;
+    }
+
+    auto thread_local_handle =
+        ThreadLocal::TypedSlot<SinglePluginHandle>::makeUnique(context.threadLocal());
+    // NB: the Slot set() call doesn't complete inline, so all arguments must outlive this call.
+    thread_local_handle->set(
+        [base_wasm, plugin = plugin_config->plugin_](Event::Dispatcher& dispatcher) {
+          return std::make_shared<SinglePluginHandle>(
+              getOrCreateThreadLocalPlugin(base_wasm, plugin, dispatcher),
+              dispatcher.timeSource().monotonicTime());
+        });
+    plugin_config->plugin_handle_ = std::move(thread_local_handle);
+  };
+
+  auto result = createWasm(plugin_config->plugin_, scope.createScope(""), context.clusterManager(),
+                           init_manager, context.mainThreadDispatcher(), context.api(),
+                           context.lifecycleNotifier(), plugin_config->remote_data_provider_,
+                           std::move(create_wasm_cb));
+  if (!result) {
+    return absl::InternalError(
+        fmt::format("Unable to create Wasm plugin {}", plugin_config->plugin_->name_));
+  }
+  return std::unique_ptr<PluginConfig>(plugin_config);
+}
+
 PluginConfig::PluginConfig(const envoy::extensions::wasm::v3::PluginConfig& config,
                            Server::Configuration::ServerFactoryContext& context,
-                           Stats::Scope& scope, Init::Manager& init_manager,
-                           envoy::config::core::v3::TrafficDirection direction,
+                           Stats::Scope& scope, envoy::config::core::v3::TrafficDirection direction,
                            const envoy::config::core::v3::Metadata* metadata, bool singleton)
     : is_singleton_handle_(singleton) {
 
@@ -607,40 +652,6 @@ PluginConfig::PluginConfig(const envoy::extensions::wasm::v3::PluginConfig& conf
 
   stats_handler_ = std::make_shared<StatsHandler>(scope, absl::StrCat("wasm.", config.name(), "."));
   plugin_ = std::make_shared<Plugin>(config, direction, context.localInfo(), metadata);
-
-  auto callback = [this, &context](WasmHandleSharedPtr base_wasm) {
-    base_wasm_ = base_wasm;
-
-    if (base_wasm == nullptr) {
-      ENVOY_LOG(critical, "Plugin {} failed to load", plugin_->name_);
-    }
-
-    if (is_singleton_handle_) {
-      plugin_handle_ = SinglePluginHandle(
-          getOrCreateThreadLocalPlugin(base_wasm, plugin_, context.mainThreadDispatcher()),
-          context.mainThreadDispatcher().timeSource().monotonicTime());
-      return;
-    }
-
-    auto thread_local_handle =
-        ThreadLocal::TypedSlot<SinglePluginHandle>::makeUnique(context.threadLocal());
-    // NB: the Slot set() call doesn't complete inline, so all arguments must outlive this call.
-    thread_local_handle->set([base_wasm, plugin = this->plugin_](Event::Dispatcher& dispatcher) {
-      return std::make_shared<SinglePluginHandle>(
-          getOrCreateThreadLocalPlugin(base_wasm, plugin, dispatcher),
-          dispatcher.timeSource().monotonicTime());
-    });
-    plugin_handle_ = std::move(thread_local_handle);
-  };
-
-  if (!Common::Wasm::createWasm(plugin_, scope.createScope(""), context.clusterManager(),
-                                init_manager, context.mainThreadDispatcher(), context.api(),
-                                context.lifecycleNotifier(), remote_data_provider_,
-                                std::move(callback))) {
-    // TODO(wbpcode): use absl::Status to return error rather than throw.
-    throw Common::Wasm::WasmException(
-        fmt::format("Unable to create Wasm plugin {}", plugin_->name_));
-  }
 }
 
 std::shared_ptr<Context> PluginConfig::createContext() {

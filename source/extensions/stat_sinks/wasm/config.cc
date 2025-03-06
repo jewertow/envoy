@@ -21,14 +21,17 @@ WasmSinkFactory::createStatsSink(const Protobuf::Message& proto_config,
       MessageUtil::downcastAndValidate<const envoy::extensions::stat_sinks::wasm::v3::Wasm&>(
           proto_config, context.messageValidationContext().staticValidationVisitor());
 
-  auto plugin_config = std::make_unique<Common::Wasm::PluginConfig>(
+  auto plugin_config = Common::Wasm::PluginConfig::create(
       config.config(), context, context.scope(), context.initManager(),
       envoy::config::core::v3::TrafficDirection::UNSPECIFIED, nullptr, true);
+  if (!plugin_config.ok()) {
+    return plugin_config.status();
+  }
 
   context.api().customStatNamespaces().registerStatNamespace(
       Extensions::Common::Wasm::CustomStatNamespace);
 
-  return std::make_unique<WasmStatSink>(std::move(plugin_config));
+  return std::make_unique<WasmStatSink>(std::move(plugin_config.value()));
 }
 
 ProtobufTypes::MessagePtr WasmSinkFactory::createEmptyConfigProto() {

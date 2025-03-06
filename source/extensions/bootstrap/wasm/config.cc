@@ -16,10 +16,15 @@ namespace Wasm {
 void WasmServiceExtension::onServerInitialized() { createWasm(context_); }
 
 void WasmServiceExtension::createWasm(Server::Configuration::ServerFactoryContext& context) {
-  plugin_config_ = std::make_unique<Common::Wasm::PluginConfig>(
+  auto plugin_config = Common::Wasm::PluginConfig::create(
       config_.config(), context, context.scope(), context.initManager(),
       envoy::config::core::v3::TrafficDirection::UNSPECIFIED, /*metadata=*/nullptr,
       config_.singleton());
+  if (!plugin_config.ok()) {
+    throw EnvoyException(fmt::format("Unable to create WasmServiceExtension: '{}'",
+                                     plugin_config.status().message()));
+  }
+  plugin_config_ = std::move(plugin_config.value());
 }
 
 Server::BootstrapExtensionPtr

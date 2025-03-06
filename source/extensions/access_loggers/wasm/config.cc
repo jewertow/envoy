@@ -21,10 +21,17 @@ AccessLog::InstanceSharedPtr WasmAccessLogFactory::createAccessLogInstance(
       const envoy::extensions::access_loggers::wasm::v3::WasmAccessLog&>(
       proto_config, context.messageValidationVisitor());
 
-  auto plugin_config = std::make_unique<Common::Wasm::PluginConfig>(
+  auto plugin_config = Common::Wasm::PluginConfig::create(
       config.config(), context.serverFactoryContext(), context.scope(), context.initManager(),
       envoy::config::core::v3::TrafficDirection::UNSPECIFIED, /*metadata=*/nullptr, false);
-  auto access_log = std::make_shared<WasmAccessLog>(std::move(plugin_config), std::move(filter));
+  // TODO(jewertow): Remove exception and wrap the result in absl::StatusOr
+  if (!plugin_config.ok()) {
+    throw EnvoyException(
+        fmt::format("Unable to create Wasm plugin: {}", plugin_config.status().message()));
+  }
+
+  auto access_log =
+      std::make_shared<WasmAccessLog>(std::move(plugin_config.value()), std::move(filter));
 
   context.serverFactoryContext().api().customStatNamespaces().registerStatNamespace(
       Extensions::Common::Wasm::CustomStatNamespace);

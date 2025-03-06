@@ -184,15 +184,16 @@ void clearCodeCacheForTesting();
 void setTimeOffsetForCodeCacheForTesting(MonotonicTime::duration d);
 WasmEvent toWasmEvent(const std::shared_ptr<WasmHandleBase>& wasm);
 
+class PluginConfig;
+using PluginConfigPtr = std::unique_ptr<PluginConfig>;
+
 class PluginConfig : Logger::Loggable<Logger::Id::wasm> {
 public:
-  // TODO(wbpcode): the code of PluginConfig will be shared cross all Wasm extensions (loggers,
-  // http filters, etc.), we may extend the constructor to takes a static string view to tell
-  // the type of the plugin if needed.
-  PluginConfig(const envoy::extensions::wasm::v3::PluginConfig& config,
-               Server::Configuration::ServerFactoryContext& context, Stats::Scope& scope,
-               Init::Manager& init_manager, envoy::config::core::v3::TrafficDirection direction,
-               const envoy::config::core::v3::Metadata* metadata, bool singleton);
+  static absl::StatusOr<PluginConfigPtr>
+  create(const envoy::extensions::wasm::v3::PluginConfig& config,
+         Server::Configuration::ServerFactoryContext& context, Stats::Scope& scope,
+         Init::Manager& init_manager, envoy::config::core::v3::TrafficDirection direction,
+         const envoy::config::core::v3::Metadata* metadata, bool singleton);
 
   std::shared_ptr<Context> createContext();
   Wasm* wasm();
@@ -203,6 +204,14 @@ public:
   using ThreadLocalPluginHandle = ThreadLocal::TypedSlotPtr<SinglePluginHandle>;
 
 private:
+  // TODO(wbpcode): the code of PluginConfig will be shared cross all Wasm extensions (loggers,
+  // http filters, etc.), we may extend the constructor to takes a static string view to tell
+  // the type of the plugin if needed.
+  PluginConfig(const envoy::extensions::wasm::v3::PluginConfig& config,
+               Server::Configuration::ServerFactoryContext& context, Stats::Scope& scope,
+               envoy::config::core::v3::TrafficDirection direction,
+               const envoy::config::core::v3::Metadata* metadata, bool singleton);
+
   /**
    * Get the latest wasm and plugin handle wrapper. The plugin handle may be reloaded if
    * the wasm is failed and the policy allows it.
@@ -228,7 +237,6 @@ private:
   absl::variant<absl::monostate, SinglePluginHandle, ThreadLocalPluginHandle> plugin_handle_;
 };
 
-using PluginConfigPtr = std::unique_ptr<PluginConfig>;
 using PluginConfigSharedPtr = std::shared_ptr<PluginConfig>;
 
 } // namespace Wasm

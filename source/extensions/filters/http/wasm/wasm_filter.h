@@ -16,13 +16,18 @@ namespace Extensions {
 namespace HttpFilters {
 namespace Wasm {
 
-class FilterConfig : public Extensions::Common::Wasm::PluginConfig {
+class FilterConfig {
 public:
   FilterConfig(const envoy::extensions::filters::http::wasm::v3::Wasm& config,
                Server::Configuration::FactoryContext& context);
 
   FilterConfig(const envoy::extensions::filters::http::wasm::v3::Wasm& config,
                Server::Configuration::UpstreamFactoryContext& context);
+
+  Extensions::Common::Wasm::ContextSharedPtr createContext();
+
+private:
+  Extensions::Common::Wasm::PluginConfigPtr plugin_config_;
 };
 
 using FilterConfigSharedPtr = std::shared_ptr<FilterConfig>;

@@ -16,10 +16,15 @@ namespace Extensions {
 namespace NetworkFilters {
 namespace Wasm {
 
-class FilterConfig : public Extensions::Common::Wasm::PluginConfig {
+class FilterConfig {
 public:
   FilterConfig(const envoy::extensions::filters::network::wasm::v3::Wasm& proto_config,
                Server::Configuration::FactoryContext& context);
+
+  Extensions::Common::Wasm::ContextSharedPtr createContext();
+
+private:
+  Extensions::Common::Wasm::PluginConfigPtr plugin_config_;
 };
 
 using FilterConfigSharedPtr = std::shared_ptr<FilterConfig>;
